@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Gemini Chatbot</title>
+<style>
+body {
+    font-family: Arial, sans-serif;
+    background: #1e1e2f;
+    color: #fff;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+}
+
+#chat-container {
+    background: #2c2c44;
+    width: 400px;
+    height: 500px;
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 0 20px #ff69b4;
+}
+
+#chat-log {
+    flex: 1;
+    padding: 15px;
+    overflow-y: auto;
+}
+
+.message {
+    margin: 8px 0;
+    padding: 8px 12px;
+    border-radius: 10px;
+    max-width: 80%;
+}
+
+.user {
+    background: #ff69b4;
+    color: #000;
+    align-self: flex-end;
+}
+
+.gemini {
+    background: #6a5acd;
+    align-self: flex-start;
+}
+
+#input-container {
+    display: flex;
+    border-top: 1px solid #444;
+}
+
+#user-input {
+    flex: 1;
+    padding: 10px;
+    border: none;
+    border-radius: 0;
+    font-size: 16px;
+}
+
+#send-btn {
+    padding: 10px 15px;
+    background: #ff69b4;
+    border: none;
+    cursor: pointer;
+    color: #000;
+    font-weight: bold;
+}
+</style>
+</head>
+
+<body>
+
+<div id="chat-container">
+    <div id="chat-log"></div>
+    <div id="input-container">
+        <input type="text" id="user-input" placeholder="Type a message..."/>
+        <button id="send-btn">Send</button>
+    </div>
+</div>
+
+<script>
+const chatLog = document.getElementById("chat-log");
+const userInput = document.getElementById("user-input");
+const sendBtn = document.getElementById("send-btn");
+
+const responses = {
+    "hello": "Hello! I'm Gemini. How can I help you today?",
+    "hi": "Hi there! Gemini at your service!",
+    "how are you": "I'm a chatbot, so always running smoothly! 😊",
+    "what is your name": "My name is Gemini!",
+    "bye": "Goodbye! Talk to you later! 🌙",
+    "default": "I'm not sure how to respond to that, but I'm learning!"
+};
+
+function addMessage(text, sender) {
+    const msg = document.createElement("div");
+    msg.className = "message " + sender;
+    msg.innerText = text;
+    chatLog.appendChild(msg);
+    chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function getResponse(input) {
+    input = input.toLowerCase();
+    for (let key in responses) {
+        if (input.includes(key)) return responses[key];
+    }
+    return responses["default"];
+}
+
+function sendMessage() {
+    const text = userInput.value.trim();
+    if (!text) return;
+    addMessage(text, "user");
+    userInput.value = "";
+    setTimeout(() => {
+        addMessage(getResponse(text), "gemini");
+    }, 500);
+}
+
+sendBtn.addEventListener("click", sendMessage);
+userInput.addEventListener("keypress", (e) => {
+    if (e.key === "Enter") sendMessage();
+});
+</script>
+
+</body>
+</html>
