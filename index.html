@@ -1,133 +1,160 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Gemini Chatbot</title>
-<style>
-body {
-    font-family: Arial, sans-serif;
-    background: #1e1e2f;
-    color: #fff;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    height: 100vh;
-}
-
-#chat-container {
-    background: #2c2c44;
-    width: 400px;
-    height: 500px;
-    border-radius: 10px;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    box-shadow: 0 0 20px #ff69b4;
-}
-
-#chat-log {
-    flex: 1;
-    padding: 15px;
-    overflow-y: auto;
-}
-
-.message {
-    margin: 8px 0;
-    padding: 8px 12px;
-    border-radius: 10px;
-    max-width: 80%;
-}
-
-.user {
-    background: #ff69b4;
-    color: #000;
-    align-self: flex-end;
-}
-
-.gemini {
-    background: #6a5acd;
-    align-self: flex-start;
-}
-
-#input-container {
-    display: flex;
-    border-top: 1px solid #444;
-}
-
-#user-input {
-    flex: 1;
-    padding: 10px;
-    border: none;
-    border-radius: 0;
-    font-size: 16px;
-}
-
-#send-btn {
-    padding: 10px 15px;
-    background: #ff69b4;
-    border: none;
-    cursor: pointer;
-    color: #000;
-    font-weight: bold;
-}
-</style>
-</head>
-
-<body>
-
-<div id="chat-container">
-    <div id="chat-log"></div>
-    <div id="input-container">
-        <input type="text" id="user-input" placeholder="Type a message..."/>
-        <button id="send-btn">Send</button>
-    </div>
-</div>
-
-<script>
-const chatLog = document.getElementById("chat-log");
-const userInput = document.getElementById("user-input");
-const sendBtn = document.getElementById("send-btn");
-
-const responses = {
-    "hello": "Hello! I'm Gemini. How can I help you today?",
-    "hi": "Hi there! Gemini at your service!",
-    "how are you": "I'm a chatbot, so always running smoothly! 😊",
-    "what is your name": "My name is Gemini!",
-    "bye": "Goodbye! Talk to you later! 🌙",
-    "default": "I'm not sure how to respond to that, but I'm learning!"
-};
-
-function addMessage(text, sender) {
-    const msg = document.createElement("div");
-    msg.className = "message " + sender;
-    msg.innerText = text;
-    chatLog.appendChild(msg);
-    chatLog.scrollTop = chatLog.scrollHeight;
-}
-
-function getResponse(input) {
-    input = input.toLowerCase();
-    for (let key in responses) {
-        if (input.includes(key)) return responses[key];
+  <meta charset="UTF-8" />
+  <title>StreamHub</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #111;
+      color: #fff;
     }
-    return responses["default"];
-}
 
-function sendMessage() {
-    const text = userInput.value.trim();
-    if (!text) return;
-    addMessage(text, "user");
-    userInput.value = "";
-    setTimeout(() => {
-        addMessage(getResponse(text), "gemini");
-    }, 500);
-}
+    header {
+      background: #000;
+      padding: 10px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
 
-sendBtn.addEventListener("click", sendMessage);
-userInput.addEventListener("keypress", (e) => {
-    if (e.key === "Enter") sendMessage();
-});
-</script>
+    .logo {
+      font-size: 24px;
+      font-weight: bold;
+    }
 
+    .logo span {
+      color: #ff9900;
+    }
+
+    nav a {
+      color: #fff;
+      text-decoration: none;
+      margin-left: 15px;
+      font-size: 14px;
+    }
+
+    nav a:hover {
+      color: #ff9900;
+    }
+
+    .search-bar {
+      margin-left: 20px;
+    }
+
+    .search-bar input {
+      padding: 5px 10px;
+      border-radius: 3px;
+      border: none;
+    }
+
+    main {
+      padding: 20px;
+    }
+
+    .section-title {
+      font-size: 18px;
+      margin-bottom: 10px;
+    }
+
+    .video-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 15px;
+    }
+
+    .video-card {
+      background: #1a1a1a;
+      border-radius: 4px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: transform 0.2s;
+    }
+
+    .video-card:hover {
+      transform: translateY(-3px);
+    }
+
+    .thumb {
+      background: #333;
+      height: 100px;
+    }
+
+    .video-info {
+      padding: 8px 10px;
+      font-size: 13px;
+    }
+
+    .video-title {
+      font-weight: bold;
+      margin-bottom: 4px;
+    }
+
+    .video-meta {
+      color: #aaa;
+      font-size: 11px;
+    }
+
+    footer {
+      padding: 15px 20px;
+      font-size: 12px;
+      color: #777;
+      background: #000;
+      text-align: center;
+      margin-top: 30px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">Stream<span>Hub</span></div>
+    <div class="search-bar">
+      <input type="text" placeholder="Search videos..." />
+    </div>
+    <nav>
+      <a href="#">Home</a>
+      <a href="#">Categories</a>
+      <a href="#">Trending</a>
+      <a href="#">Login</a>
+      <a href="#">Sign Up</a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="section-title">Trending Videos</div>
+    <div class="video-grid">
+      <div class="video-card">
+        <div class="thumb"></div>
+        <div class="video-info">
+          <div class="video-title">Sample Video 1</div>
+          <div class="video-meta">1.2M views · 10 min</div>
+        </div>
+      </div>
+
+      <div class="video-card">
+        <div class="thumb"></div>
+        <div class="video-info">
+          <div class="video-title">Sample Video 2</div>
+          <div class="video-meta">532K views · 7 min</div>
+        </div>
+      </div>
+
+      <div class="video-card">
+        <div class="thumb"></div>
+        <div class="video-info">
+          <div class="video-title">Sample Video 3</div>
+          <div class="video-meta">98K views · 4 min</div>
+        </div>
+      </div>
+
+      <!-- Duplicate video-card blocks as needed -->
+    </div>
+  </main>
+
+  <footer>
+    © 2026 StreamHub · Terms · Privacy · Help
+  </footer>
 </body>
 </html>
