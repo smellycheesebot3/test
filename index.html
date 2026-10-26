@@ -1,9 +1,9 @@
-<!DOCTYPE html>
+!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FPV Drone Simulator</title>
+    <title>Ultimate FPV Drone Simulator</title>
     <style>
         body { margin: 0; padding: 0; overflow: hidden; background-color: #111; font-family: sans-serif; color: #fff; user-select: none; }
         #canvas-container { width: 100vw; height: 100vh; display: block; }
@@ -21,6 +21,15 @@
         table { width: 100%; margin: 15px 0; border-collapse: collapse; text-align: left; }
         td { padding: 6px; border-bottom: 1px solid #333; }
         td:last-child { color: #00ff00; font-family: monospace; text-align: right; }
+        
+        /* Analog CRT FPV Goggle Overlays */
+        #osd {
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.15) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.03), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.03));
+            background-size: 100% 4px, 6px 100%;
+            animation: crt-flicker 0.15s infinite;
+        }
+        @keyframes crt-flicker { 0% { opacity: 0.99; } 50% { opacity: 1.0; } 100% { opacity: 0.98; } }
+        .video-noise { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: url('data:image/svg+xml,%3Csvg viewBox="0 0 200 200" xmlns="http://w3.org"%3E%3Cfilter id="noiseFilter"%3E%3CfeTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="3" stitchTiles="stitch"/%3E%3C/filter%3E%3Crect width="100%25" height="100%25" filter="url(%23noiseFilter)"/%3E%3C/svg%3E'); opacity: 0.04; pointer-events: none; z-index: 1; }
     </style>
     <script src="https://cloudflare.com"></script>
 </head>
@@ -30,7 +39,11 @@
         <div id="osd-telemetry" class="osd-element">THR: <span id="v-thr">0</span>%<br>SPD: <span id="v-spd">0</span> km/h<br>ALT: <span id="v-alt">0</span> m<br>MODE: <span id="v-mod">ACRO</span></div>
         <div id="osd-center">+</div>
         <div id="osd-controls" class="osd-element">PITCH: <span id="v-pit">0</span>°<br>ROLL: <span id="v-rol">0</span>°<br>YAW: <span id="v-yaw">0</span>°</div>
-        <div id="osd-bottom"><span>BAT: 4.20V (6S)</span><span>LQ: 99%</span><span>FPV PARK SIM</span></div>
+        <div id="osd-bottom">
+            <span id="bat-telemetry">BAT: 25.2V [100%]</span>
+            <span id="lap-timer" style="color: #ffff00;">LAP: 0.00s</span>
+            <span id="best-lap" style="color: #00ffff;">BEST: --:--</span>
+        </div>
     </div>
     <div id="ui-panel">
         <div class="control-group"><label>MODE</label><select id="s-mod"><option value="acro">Acro</option><option value="angle">Angle</option></select></div>
@@ -38,620 +51,226 @@
         <button id="b-rst">Reset (R)</button>
     </div>
     <div id="modal">
-        <h3>FPV Simulator</h3>
+        <h3>FPV Drone Simulator</h3>
         <table>
             <tr><td>Throttle Up / Down</td><td>W / S</td></tr>
             <tr><td>Yaw Left / Right</td><td>A / D</td></tr>
             <tr><td>Pitch Down / Up</td><td>Up / Down Arrow</td></tr>
             <tr><td>Roll Left / Right</td><td>Left / Right Arrow</td></tr>
-            <tr><td>Reset Drone Matrix</td><td>R</td></tr>
+            <tr><td>Reset Setup Matrix</td><td>R</td></tr>
         </table>
-        <button id="b-str" style="width:100%">Fly Now</button>
+        <button id="b-str" style="width:100%; padding:10px; font-weight:bold; background:#00ff00; color:#000; border:none; border-radius:4px; cursor:pointer;">START SIMULATOR</button>
     </div>
-  
-  <!-- STEP 3: LAP TIMER & CRASH SYSTEM EXTENSION -->
-<!-- Insert this block directly above the closing </script> tag of Step 2 -->
+
     <script>
-        // Track race records
-        let currentLapTime = 0;
-        let bestLapTime = Infinity;
-        let raceActive = false;
-        let lastPassedGate = -1;
-        let totalLapsCompleted = 0;
+        // --- Core Simulation State ---
+        let scene, camera, renderer, clock = new THREE.Clock(), keys = {}, flightMode = 'acro';
+        let drone = { pos: new THREE.Vector3(0, 0.2, 0), rot: new THREE.Euler(0, 0, 0, 'YXZ'), vel: new THREE.Vector3(0, 0, 0), angVel: new THREE.Vector3(0, 0, 0), throttle: 0, cameraTilt: 30 };
+        const GRAVITY = 9.81, DRAG = 1.2, ANGULAR_DRAG = 8.0, RATES = { pitch: 6.5, roll: 6.5, yaw: 4.0 };
+        let BASE_MAX_THRUST = 25, currentMaxThrust = 25;
 
-        // OSD elements injection for lap times
-        const osdBottom = document.getElementById('osd-bottom');
-        osdBottom.innerHTML = `
-            <span>BAT: 4.20V (6S)</span>
-            <span id="lap-timer" style="color: #ffff00;">LAP: 0.00s</span>
-            <span id="best-lap" style="color: #00ffff;">BEST: --:--</span>
-        `;
+        // Obstacles & Particles State
+        let obstacleMeshes = [], particles = [], maxParticles = 80;
 
-        // Extend the baseline physics frame hook to track race configurations
-        const originalUpdatePhysics = updatePhysics;
-        updatePhysics = function(dt) {
-            originalUpdatePhysics(dt);
-            
-            if (drone.throttle > 5 && !raceActive) {
-                raceActive = true;
-            }
+        // Racing Metrics State
+        let currentLapTime = 0, bestLapTime = Infinity, raceActive = false, lastPassedGate = -1, totalLapsCompleted = 0;
 
-            if (raceActive) {
-                currentLapTime += dt;
-                document.getElementById('lap-timer').innerText = `LAP: ${currentLapTime.toFixed(2)}s`;
-                checkGateCollisions();
-            }
-            
-            checkCrashConditions();
-        };
-
-        function checkGateCollisions() {
-            // Primitive bounding box collision calculations for course gate checkin points
-            let gatePositions = [
-                new THREE.Vector3(0, 4, -40),
-                new THREE.Vector3(40, 4, -80),
-                new THREE.Vector3(0, 4, -120),
-                new THREE.Vector3(-40, 4, -60)
-            ];
-
-            gatePositions.forEach((gateCenter, index) => {
-                let dist = drone.pos.distanceTo(gateCenter);
-                // When quad matches proximity threshold
-                if (dist < 6) {
-                    if (index === 0 && lastPassedGate === gatePositions.length - 1) {
-                        // Completed a full lap loop sequence
-                        totalLapsCompleted++;
-                        if (currentLapTime < bestLapTime) {
-                            bestLapTime = currentLapTime;
-                            document.getElementById('best-lap').innerText = `BEST: ${bestLapTime.toFixed(2)}s`;
-                        }
-                        currentLapTime = 0;
-                        flashOSD('#00ff00');
-                    }
-                    lastPassedGate = index;
-                }
-            });
-        }
-
-        function checkCrashConditions() {
-            // Ground impact penalty matrix or high-velocity threshold breaks
-            if (drone.pos.y <= 0.15 && drone.vel.length() > 8) {
-                flashOSD('#ff0000');
-                reset();
-                currentLapTime = 0;
-                raceActive = false;
-            }
-        }
-
-        function flashOSD(color) {
-            const osd = document.getElementById('osd');
-            osd.style.boxShadow = `inset 0 0 80px ${color}`;
-            setTimeout(() => {
-                osd.style.boxShadow = 'none';
-            }, 300);
-        }
-    </script>
-
-<!-- STEP 4: GAMEPAD / TRANSMITTER INTEGRATION -->
-<!-- Insert this block directly above the closing </script> tag of the file -->
-    <script>
+        // Radio Gamepad Mapping System
         let gamepadIndex = null;
+        const RC_CHANNELS = { roll: 0, pitch: 1, yaw: 2, throttle: 3 };
 
-        // Custom Transmitter Channel Mapping (Betaflight Style)
-        const RC_CHANNELS = {
-            roll: 0,      // Left Stick Horizontal (Acro Roll)
-            pitch: 1,     // Left Stick Vertical (Acro Pitch)
-            yaw: 2,       // Right Stick Horizontal (Yaw)
-            throttle: 3   // Right Stick Vertical (Throttle Axis)
-        };
+        // Audio System State
+        let audioCtx = null, mainOsc = null, gainNode = null, audioInitialized = false;
 
-        // Scan and capture active gamepad profiles
-        window.addEventListener("gamepadconnected", (e) => {
-            gamepadIndex = e.gamepad.index;
-            updateOSDMessage("🏆 RADIO CONNECTED: " + e.gamepad.id.substring(0, 15));
-            flashOSD('#00ffff');
-        });
+        // Battery Modeling Variables
+        let totalCells = 6, nominalVoltage = 4.20, currentCellVoltage = 4.20, batteryCapacityMAh = 1300, remainingCapacityMAh = 1300, peakCurrentAmps = 120;
 
-        window.addEventListener("gamepaddisconnected", (e) => {
-            if (gamepadIndex === e.gamepad.index) {
-                gamepadIndex = null;
-                updateOSDMessage("⚠️ CONTROLLER DISCONNECTED");
-                flashOSD('#ff5500');
-            }
-        });
-
-        // Intercept standard input loops to layer radio data overrides
-        const baseUpdatePhysics = updatePhysics;
-        updatePhysics = function(dt) {
-            if (gamepadIndex !== null) {
-                const gp = navigator.getGamepads()[gamepadIndex];
-                if (gp) {
-                    handleRadioInputs(gp, dt);
-                }
-            }
-            baseUpdatePhysics(dt);
-        };
-
-        function handleRadioInputs(gp, dt) {
-            // 1. Throttle Processing (Maps axis variance scale -1 to 1 directly to 0-100%)
-            let rawThrottle = gp.axes[RC_CHANNELS.throttle];
-            // Invert axis values if the radio registers down-stick as negative values
-            let invertedThrottle = (1 - rawThrottle) / 2; 
-            drone.throttle = invertedThrottle * 100;
-
-            // 2. Multiaxis Directional Rate Calculations (Applies deadzone filtering)
-            const deadzone = 0.05;
-            
-            let rawRoll = gp.axes[RC_CHANNELS.roll];
-            let rawPitch = gp.axes[RC_CHANNELS.pitch];
-            let rawYaw = gp.axes[RC_CHANNELS.yaw];
-
-            if (flightMode === 'acro') {
-                drone.angVel.z = Math.abs(rawRoll) > deadzone ? -rawRoll * RATES.roll : 0;
-                drone.angVel.x = Math.abs(rawPitch) > deadzone ? rawPitch * RATES.pitch : 0;
-            } else {
-                let targetPitch = Math.abs(rawPitch) > deadzone ? rawPitch * 0.6 : 0;
-                let targetRoll = Math.abs(rawRoll) > deadzone ? -rawRoll * 0.6 : 0;
-                drone.angVel.x = (targetPitch - drone.rot.x) * 8.0;
-                drone.angVel.z = (targetRoll - drone.rot.z) * 8.0;
-            }
-
-            drone.angVel.y = Math.abs(rawYaw) > deadzone ? -rawYaw * RATES.yaw : 0;
-
-            // 3. Hardware Button Actions (Map Button 0 to instantly invoke system resets)
-            if (gp.buttons[0] && gp.buttons[0].pressed) {
-                reset();
-                currentLapTime = 0;
-                raceActive = false;
-            }
-        }
-
-        function updateOSDMessage(msg) {
-            const osdCenter = document.getElementById('osd-center');
-            osdCenter.innerText = msg;
-            osdCenter.style.fontSize = "16px";
-            setTimeout(() => {
-                osdCenter.innerText = "+";
-                osdCenter.style.fontSize = "24px";
-            }, 3000);
-        }
-    </script>
-
-  <!-- STEP 5: AUDIO SYSTEM (DYNAMIC MOTOR BUZZ) -->
-<!-- Insert this block directly above the closing </script> tag of the file -->
-    <script>
-        let audioCtx = null;
-        let mainOsc = null;
-        let gainNode = null;
-        let audioInitialized = false;
-
-        function initAudio() {
-            if (audioInitialized) return;
-            
-            try {
-                // Initialize the Web Audio API context
-                const AudioContext = window.AudioContext || window.webkitAudioContext;
-                audioCtx = new AudioContext();
-                
-                // Create a sawtooth oscillator to simulate realistic motor/propeller buzz
-                mainOsc = audioCtx.createOscillator();
-                mainOsc.type = 'sawtooth';
-                
-                // Create gain control node to manage dynamic motor volume spikes
-                gainNode = audioCtx.createGain();
-                gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
-                
-                // Link nodes together to build the output matrix path
-                mainOsc.connect(gainNode);
-                gainNode.connect(audioCtx.destination);
-                
-                mainOsc.start();
-                audioInitialized = true;
-            } catch (e) {
-                console.error("Web Audio API failed to load:", e);
-            }
-        }
-
-        // Attach initialization trigger to the start button action layout
-        document.getElementById('b-str').addEventListener('click', () => {
-            initAudio();
-        });
-
-        // Intercept baseline loop system processing to map active engine sounds
-        const baseAudioUpdatePhysics = updatePhysics;
-        updatePhysics = function(dt) {
-            baseAudioUpdatePhysics(dt);
-            if (audioInitialized && audioCtx) {
-                updateMotorSound();
-            }
-        };
-
-        function updateMotorSound() {
-            // Avoid sudden pops by calculating smooth audio timeline transitions
-            const targetTime = audioCtx.currentTime + 0.05;
-            
-            // Map throttle percentage to real-time audio pitch frequencies
-            // Lower limit (0% Throttle) = 60Hz idle rumble
-            // Upper limit (100% Throttle) = 450Hz screaming quad whine
-            const targetFrequency = 60 + (drone.throttle / 100) * 390;
-            mainOsc.frequency.setTargetAtTime(targetFrequency, audioCtx.currentTime, 0.03);
-            
-            // Scale gain volume curve smoothly so the motors stay quiet at idle
-            let targetVolume = (drone.throttle / 100) * 0.15;
-            if (drone.throttle <= 1) targetVolume = 0.01; // Low level ambient idle buzz
-            
-            gainNode.gain.setTargetAtTime(targetVolume, audioCtx.currentTime, 0.03);
-        }
-
-        // Kill audio stream execution paths if drone crashes out hard
-        const baseAudioReset = reset;
-        reset = function() {
-            baseAudioReset();
-            if (audioInitialized && gainNode) {
-                gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
-            }
-        };
-    </script>
-
-  <!-- STEP 6: PROCEDURAL OBSTACLE FIELD & BUILDINGS -->
-<!-- Insert this block directly above the closing </script> tag of the file -->
-    <script>
-        // Track generated obstacles for potential hit detection expansion
-        let obstacleMeshes = [];
-
-        // Extend world building to inject custom structures and obstacles
-        const baseBuildWorld = buildWorld;
-        buildWorld = function() {
-            baseBuildWorld();
-            generateObstacleField();
-        };
-
-        function generateObstacleField() {
-            // 1. Generate Skyscrapers/Concrete Pillars around the perimeter
-            const buildingMat = new THREE.MeshStandardMaterial({ 
-                color: 0x222831, 
-                roughness: 0.7,
-                metalness: 0.2
-            });
-
-            for (let i = 0; i < 15; i++) {
-                // Random position away from the center spawn point
-                let radius = 120 + Math.random() * 150;
-                let angle = Math.random() * Math.PI * 2;
-                let x = Math.cos(angle) * radius;
-                let z = Math.sin(angle) * radius;
-
-                let w = 15 + Math.random() * 20;
-                let h = 40 + Math.random() * 60;
-                let d = 15 + Math.random() * 20;
-
-                let boxGeo = new THREE.BoxGeometry(w, h, d);
-                let building = new THREE.Mesh(boxGeo, buildingMat);
-                
-                building.position.set(x, h / 2, z);
-                scene.add(building);
-                obstacleMeshes.push(building);
-            }
-
-            // 2. Generate Slalom Cones/Pylons within the inner circuit
-            const pylonMat = new THREE.MeshStandardMaterial({ color: 0x393e46, roughness: 0.5 });
-            const tipMat = new THREE.MeshStandardMaterial({ color: 0x00adb5, emissive: 0x00adb5, emissiveIntensity: 0.5 });
-            
-            const pylonCoords = [
-                {x: 20, z: -20}, {x: -20, z: -90}, {x: 20, z: -140}, {x: -60, z: -100}
-            ];
-
-            pylonCoords.forEach(coord => {
-                let pylonGroup = new THREE.Group();
-                pylonGroup.position.set(coord.x, 0, coord.z);
-
-                // Base cylinder cone section
-                let baseGeo = new THREE.CylinderGeometry(0.5, 2, 12, 6);
-                let baseMesh = new THREE.Mesh(baseGeo, pylonMat);
-                baseMesh.position.y = 6;
-                pylonGroup.add(baseMesh);
-
-                // Glowing neon tip section for night/low-vis style marks
-                let tipGeo = new THREE.CylinderGeometry(0.1, 0.6, 3, 6);
-                let tipMesh = new THREE.Mesh(tipGeo, tipMat);
-                tipMesh.position.y = 13.5;
-                pylonGroup.add(tipMesh);
-
-                scene.add(pylonGroup);
-                obstacleMeshes.push(baseMesh); // Add base reference for physics calculations
-            });
-        }
-
-        // Intercept core physics execution stack to process structure collision penalties
-        const baseObstacleUpdatePhysics = updatePhysics;
-        updatePhysics = function(dt) {
-            baseObstacleUpdatePhysics(dt);
-            checkObstacleCollisions();
-        };
-
-        function checkObstacleCollisions() {
-            // Basic cylinder/radial bounding checks for simple structural barriers
-            obstacleMeshes.forEach(mesh => {
-                let tempPos = new THREE.Vector3();
-                mesh.getWorldPosition(tempPos);
-
-                // Quick horizontal plane check
-                let horizontalDist = Math.sqrt(
-                    Math.pow(drone.pos.x - tempPos.x, 2) + 
-                    Math.pow(drone.pos.z - tempPos.z, 2)
-                );
-
-                // Extract geometry bounds safely
-                let isBox = mesh.geometry.type === 'BoxGeometry';
-                let collisionRadius = isBox ? 12 : 2.5;
-                let maxDangerHeight = isBox ? mesh.geometry.parameters.height : 15;
-
-                if (horizontalDist < collisionRadius && drone.pos.y < maxDangerHeight) {
-                    // Impact registered against environmental obstacle object mesh structure
-                    flashOSD('#ff0055');
-                    reset();
-                    currentLapTime = 0;
-                    raceActive = false;
-                }
-            });
-        }
-    </script>
-
-<!-- STEP 7: ANALOG CAMERA DISTORTION & SCANLINES (OSD CRT EFFECT) -->
-<!-- Insert this block directly above the closing </script> tag of the file -->
-    <script>
-        // Inject vintage analogue tracking static into the OSD layout overlay
-        const osdContainer = document.getElementById('osd');
-        
-        // Append CSS scanline overlay effects dynamically
-        const styleElement = document.createElement('style');
-        styleElement.innerHTML = `
-            #osd {
-                background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.15) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.03), rgba(0, 255, 0, 0.01), rgba(0, 0, 255, 0.03));
-                background-size: 100% 4px, 6px 100%;
-                animation: crt-flicker 0.15s infinite;
-            }
-            @keyframes crt-flicker {
-                0% { opacity: 0.99; }
-                50% { opacity: 1.0; }
-                100% { opacity: 0.98; }
-            }
-            .video-noise {
-                position: absolute;
-                top: 0; left: 0; width: 100%; height: 100%;
-                background: url('data:image/svg+xml,%3Csvg viewBox="0 0 200 200" xmlns="http://w3.org"%3E%3Cfilter id="noiseFilter"%3E%3CfeTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="3" stitchTiles="stitch"/%3E%3C/filter%3E%3Crect width="100%25" height="100%25" filter="url(%23noiseFilter)"/%3E%3C/svg%3E');
-                opacity: 0.04;
-                pointer-events: none;
-                z-index: 1;
-            }
-        `;
-        document.head.appendChild(styleElement);
-
-        // Append noise texture layer inside the UI matrix wrapper
-        const noiseLayer = document.createElement('div');
-        noiseLayer.className = 'video-noise';
-        osdContainer.appendChild(noiseLayer);
-
-        // Hook baseline physics loops to modulate camera noise relative to flight metrics
-        const baseNoiseUpdatePhysics = updatePhysics;
-        updatePhysics = function(dt) {
-            baseNoiseUpdatePhysics(dt);
-            applyAnalogStaticInterference();
-        };
-
-        function applyAnalogStaticInterference() {
-            // Analog tracking video feeds break apart when obstacles drop between Tx and Rx
-            // We simulate signal drops based on altitude drops or horizontal track ranges
-            let distanceToCenter = drone.pos.length();
-            
-            // Calculate baseline signal degradation modifier profiles
-            let altitudePenalty = Math.max(0, (20 - drone.pos.y) * 0.002);
-            let distancePenalty = Math.max(0, (distanceToCenter - 100) * 0.0003);
-            let rawInterference = 0.04 + altitudePenalty + distancePenalty;
-
-            // Introduce high-frequency random multi-path noise flickers
-            if (Math.random() > 0.97) {
-                rawInterference += 0.08; // Sudden spike glitch frame drop
-            }
-
-            // Clamp max values to prevent total screen blackouts
-            let finalNoiseAlpha = Math.min(0.25, rawInterference);
-            noiseLayer.style.opacity = finalNoiseAlpha;
-
-            // Sync structural OSD text values to drift/flicker slightly if noise hits critical points
-            if (finalNoiseAlpha > 0.12 && Math.random() > 0.8) {
-                osdContainer.style.color = '#77ff77';
-                osdContainer.style.transform = `translate(${(Math.random() - 0.5) * 3}px, ${(Math.random() - 0.5) * 3}px)`;
-            } else {
-                osdContainer.style.color = '#00ff00';
-                osdContainer.style.transform = 'none';
-            }
-        }
-    </script>
-
-  <!-- STEP 8: ROCKET BOOST PARTICLE TRAILS & GATES EFFECTS -->
-<!-- Insert this block directly above the closing </script> tag of the file -->
-    <script>
-        let particles = [];
-        const maxParticles = 80;
-
-        // Custom Particle Object Definition Matrix
+        // Custom Particle Object Template
         class JetParticle {
             constructor(position, color) {
                 this.pos = position.clone();
-                // Random vector spray offset trailing directly behind the drone's path
-                this.vel = new THREE.Vector3(
-                    (Math.random() - 0.5) * 2,
-                    (Math.random() - 0.5) * 2,
-                    (Math.random() - 0.5) * 2
-                );
-                this.age = 0;
-                this.maxAge = 0.5 + Math.random() * 0.4; // Decay time in seconds
-
-                // Setup miniature neon tracking sphere primitives
+                this.vel = new THREE.Vector3((Math.random() - 0.5) * 2, (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 2);
+                this.age = 0; this.maxAge = 0.5 + Math.random() * 0.4;
                 let geo = new THREE.SphereGeometry(0.12, 4, 4);
-                let mat = new THREE.MeshBasicMaterial({
-                    color: color,
-                    transparent: true,
-                    opacity: 0.8
-                });
-                this.mesh = new THREE.Mesh(geo, mat);
-                this.mesh.position.copy(this.pos);
-                scene.add(this.mesh);
+                let mat = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.8 });
+                this.mesh = new THREE.Mesh(geo, mat); this.mesh.position.copy(this.pos); scene.add(this.mesh);
             }
-
             update(dt) {
-                this.age += dt;
-                this.pos.addScaledVector(this.vel, dt);
-                this.mesh.position.copy(this.pos);
-                
-                // Fade opacity over time to simulate exhaust dissipation
+                this.age += dt; this.pos.addScaledVector(this.vel, dt); this.mesh.position.copy(this.pos);
                 this.mesh.material.opacity = 1.0 - (this.age / this.maxAge);
-                
-                if (this.age >= this.maxAge) {
-                    scene.remove(this.mesh);
-                    this.mesh.geometry.dispose();
-                    this.mesh.material.dispose();
-                    return false; // Mark for cleanup
-                }
+                if (this.age >= this.maxAge) { scene.remove(this.mesh); this.mesh.geometry.dispose(); this.mesh.material.dispose(); return false; }
                 return true;
             }
         }
 
-        // Intercept standard core physics frames to feed visual trail systems
-        const baseParticleUpdatePhysics = updatePhysics;
-        updatePhysics = function(dt) {
-            baseParticleUpdatePhysics(dt);
+        // --- Initialisation Setup ---
+        function init() {
+            scene = new THREE.Scene(); scene.background = new THREE.Color(0xa0b0d0); scene.fog = new THREE.FogExp2(0xa0b0d0, 0.015);
+            camera = new THREE.PerspectiveCamera(85, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setSize(window.innerWidth, window.innerHeight);
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
             
-            // 1. Generate thrust prop wash particles when active throttle matches threshold
-            if (drone.throttle > 15 && particles.length < maxParticles) {
-                // Calculate position slightly below and behind camera vector array orientation
-                let trailOffset = new THREE.Vector3(0, -0.4, 0.8).applyQuaternion(
-                    new THREE.Quaternion().setFromEuler(drone.rot)
-                );
-                let spawnPoint = drone.pos.clone().add(trailOffset);
-                
-                // Pick exhaust trailing glow profile based on active flight mechanics speed configuration
-                let trailColor = drone.throttle > 80 ? 0xff3300 : 0x00ffff;
-                particles.push(new JetParticle(spawnPoint, trailColor));
-            }
+            scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+            let sun = new THREE.DirectionalLight(0xffffff, 0.7); sun.position.set(50, 100, 50); scene.add(sun);
 
-            // 2. Iterate and process particle stack garbage cleanup tasks
-            for (let i = particles.length - 1; i >= 0; i--) {
-                let alive = particles[i].update(dt);
-                if (!alive) {
-                    particles.splice(i, 1);
-                }
-            }
-        };
-
-        // Override existing checkpoint collision routines to emit particle rings on success
-        const baseGateCheckOverride = checkGateCollisions;
-        checkGateCollisions = function() {
-            let oldPassedGate = lastPassedGate;
-            baseGateCheckOverride();
-            
-            // If the gate sequence successfully incremented, burst gate fireworks!
-            if (lastPassedGate !== oldPassedGate) {
-                triggerGateBurstEffect(drone.pos);
-            }
-        };
-
-        function triggerGateBurstEffect(position) {
-            for (let i = 0; i < 30; i++) {
-                let burstPoint = position.clone();
-                let p = new JetParticle(burstPoint, 0x00ff00);
-                // Ramp speed metrics out exponentially to trigger explosive visual pops
-                p.vel.multiplyScalar(6);
-                p.maxAge = 0.8;
-                particles.push(p);
-            }
+            buildWorld(); setupEvents(); animate();
         }
-    </script>
 
-  <!-- STEP 9: BATTERY VOLTAGE SAG & DYNAMIC POWER DEGRADATION SIMULATOR -->
-<!-- Insert this block directly above the closing </script> tag of the file -->
-    <script>
-        // Core battery telemetry variables
-        let totalCells = 6;
-        let nominalVoltage = 4.20; // Per cell limit
-        let currentCellVoltage = 4.20;
-        let batteryCapacityMAh = 1300;
-        let remainingCapacityMAh = 1300;
-        let peakCurrentAmps = 120; // Max current draw at 100% throttle
-        
-        // Hook baseline physics loops to simulate complex battery physics modeling
-        const baseBatteryUpdatePhysics = updatePhysics;
-        updatePhysics = function(dt) {
-            if (remainingCapacityMAh > 0) {
-                // 1. Calculate active real-time current draw based on your current throttle position
-                let idleCurrent = 2.5; // Baseline electronics power draw
-                let activeCurrentDraw = idleCurrent + (drone.throttle / 100) * (peakCurrentAmps - idleCurrent);
-                
-                // 2. Consume capacity over time delta (Amps * hours conversion)
-                let consumedMAh = (activeCurrentDraw * 1000) * (dt / 3600);
-                remainingCapacityMAh = Math.max(0, remainingCapacityMAh - consumedMAh);
-                
-                // 3. Model True Internal Resistance Voltage Sag (V = IR)
-                // Pushing full throttle forces an immediate, temporary drop in cell performance
-                let internalResistance = 0.004; // Ohms per cell
-                let instantaneousSag = activeCurrentDraw * internalResistance;
-                
-                // 4. Model Linear Capacity Discharge Curve
-                let capacityPercentage = remainingCapacityMAh / batteryCapacityMAh;
-                let restedCellVoltage = 3.5 + (capacityPercentage * 0.7); // Discharges down from 4.20V to 3.50V base
-                
-                // Final actual running voltage under current load conditions
-                currentCellVoltage = Math.max(3.2, restedCellVoltage - instantaneousSag);
-                
-                // 5. Dynamic Power Output Degradation Performance Limiter
-                // As the overall system voltage sags, max thrust capability is choked down
-                let powerEfficiencyFactor = (currentCellVoltage / nominalVoltage);
-                // Dynamically modify the engine's thrust capacity parameter mid-flight
-                MAX_THRUST = 25 * Math.pow(powerEfficiencyFactor, 1.8);
-                
-                // 6. Low Battery Alerts
-                if (currentCellVoltage < 3.5) {
-                    // Flash low battery warnings directly across your central HUD layout
-                    if (Math.floor(clock.getElapsedTime() * 4) % 2 === 0) {
-                        document.getElementById('v-thr').parentElement.style.color = '#ff3300';
-                    }
-                } else {
-                    document.getElementById('v-thr').parentElement.style.color = '#00ff00';
-                }
-            } else {
-                // Out of battery! Cut all engine output completely
-                drone.throttle = 0;
-                MAX_THRUST = 0;
-                currentCellVoltage = 3.0;
-            }
-            
-            // Invoke the next steps in the physics pipeline chain
-            baseBatteryUpdatePhysics(dt);
-            
-            // 7. Update Telemetry Screen Readouts
-            let totalPackVoltage = (currentCellVoltage * totalCells).toFixed(1);
-            let capacityRemainingPercent = Math.round((remainingCapacityMAh / batteryCapacityMAh) * 100);
-            
-            // Locate the bottom tracking bar inside your dashboard overlay interface
-            const osdBottomSpan = document.getElementById('osd-bottom').children[0];
-            osdBottomSpan.innerText = `BAT: ${totalPackVoltage}V [${capacityRemainingPercent}%]`;
-            if (currentCellVoltage < 3.5) {
-                osdBottomSpan.style.color = '#ff3300';
-                osdBottomSpan.style.fontWeight = 'bold';
-            } else {
-                osdBottomSpan.style.color = '#00ff00';
-                osdBottomSpan.style.fontWeight = 'normal';
+        function buildWorld() {
+            let ground = new THREE.Mesh(new THREE.PlaneGeometry(1000, 1000), new THREE.MeshStandardMaterial({ color: 0x4d7328 }));
+            ground.rotation.x = -Math.PI / 2; scene.add(ground);
+            let grid = new THREE.GridHelper(1000, 200, 0x223311, 0x3d5c20); grid.position.y = 0.01; scene.add(grid);
+
+            // Spawn Track Gates
+            let gatePositions = [new THREE.Vector3(0,0,-40), new THREE.Vector3(40,0,-80), new THREE.Vector3(0,0,-120), new THREE.Vector3(-40,0,-60)];
+            gatePositions.forEach((pos, i) => {
+                let g = new THREE.Group(); g.position.copy(pos); g.rotation.y = (Math.PI/2)*i;
+                let mat = new THREE.MeshStandardMaterial({ color: 0xff5500 });
+                let p1 = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 8), mat); p1.position.set(-5, 4, 0); g.add(p1);
+                let p2 = p1.clone(); p2.position.x = 5; g.add(p2);
+                let top = new THREE.Mesh(new THREE.BoxGeometry(10, 0.3, 0.3), mat); top.position.y = 8; g.add(top);
+                scene.add(g);
+            });
+
+            // Procedural Obstacles Field Setup
+            let buildingMat = new THREE.MeshStandardMaterial({ color: 0x222831, roughness: 0.7 });
+            for (let i = 0; i < 15; i++) {
+                let radius = 120 + Math.random() * 150, angle = Math.random() * Math.PI * 2;
+                let w = 15 + Math.random() * 20, h = 40 + Math.random() * 60, d = 15 + Math.random() * 20;
+                let building = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), buildingMat);
+                building.position.set(Math.cos(angle) * radius, h / 2, Math.sin(angle) * radius);
+                scene.add(building); obstacleMeshes.push(building);
             }
         }
 
-        // Reset your battery parameters alongside structural drone crash matrices
-        const baseBatteryReset = reset;
-        reset = function() {
-            baseBatteryReset();
-            // Automatically swap in a freshly charged pack when resetting your position
-            remainingCapacityMAh = batteryCapacityMAh;
-            currentCellVoltage = nominalVoltage;
-            MAX_THRUST = 25;
-        }
-    </script>
+        // --- Core Flight Loop & Physics Framework ---
+Use code with caution.
+function updatePhysics(dt) {
+if (dt > 0.1) dt = 0.1;
+// 1. Process Battery Depletion & Voltage Sag Processing Matrix
+if (remainingCapacityMAh > 0) {
+let activeCurrentDraw = 2.5 + (drone.throttle / 100) * (peakCurrentAmps - 2.5);
+remainingCapacityMAh = Math.max(0, remainingCapacityMAh - (activeCurrentDraw * 1000) * (dt / 3600));
+let instantaneousSag = activeCurrentDraw * 0.004;
+let restedCellVoltage = 3.5 + ((remainingCapacityMAh / batteryCapacityMAh) * 0.7);
+currentCellVoltage = Math.max(3.2, restedCellVoltage - instantaneousSag);
+currentMaxThrust = BASE_MAX_THRUST * Math.pow((currentCellVoltage / nominalVoltage), 1.8);
+} else {
+drone.throttle = 0; currentMaxThrust = 0; currentCellVoltage = 3.0;
+}
+// 2. Handle Inputs Mapping Parameters
+if (gamepadIndex !== null) {
+const gp = navigator.getGamepads()[gamepadIndex];
+if (gp) {
+drone.throttle = ((1 - gp.axes[RC_CHANNELS.throttle]) / 2) * 100;
+const dz = 0.05;
+if (flightMode === 'acro') {
+drone.angVel.z = Math.abs(gp.axes[RC_CHANNELS.roll]) > dz ? -gp.axes[RC_CHANNELS.roll] * RATES.roll : 0;
+drone.angVel.x = Math.abs(gp.axes[RC_CHANNELS.pitch]) > dz ? gp.axes[RC_CHANNELS.pitch] * RATES.pitch : 0;
+} else {
+let tP = Math.abs(gp.axes[RC_CHANNELS.pitch]) > dz ? gp.axes[RC_CHANNELS.pitch] * 0.6 : 0;
+let tR = Math.abs(gp.axes[RC_CHANNELS.roll]) > dz ? -gp.axes[RC_CHANNELS.roll] * 0.6 : 0;
+drone.angVel.x = (tP - drone.rot.x) * 8.0; drone.angVel.z = (tR - drone.rot.z) * 8.0;
+}
+drone.angVel.y = Math.abs(gp.axes[RC_CHANNELS.yaw]) > dz ? -gp.axes[RC_CHANNELS.yaw] * RATES.yaw : 0;
+if (gp.buttons[0]?.pressed) reset();
+}
+} else {
+// Standard Keyboard Input System Loops
+if (keys['w'] || keys['W']) drone.throttle = Math.min(100, drone.throttle + 80 * dt);
+if (keys['s'] || keys['S']) drone.throttle = Math.max(0, drone.throttle - 80 * dt);
+if (flightMode === 'acro') {
+drone.angVel.x = keys['ArrowUp'] ? -RATES.pitch : (keys['ArrowDown'] ? RATES.pitch : drone.angVel.x - drone.angVel.x * ANGULAR_DRAG * dt);
+drone.angVel.z = keys['ArrowLeft'] ? RATES.roll : (keys['ArrowRight'] ? -RATES.roll : drone.angVel.z - drone.angVel.z * ANGULAR_DRAG * dt);
+} else {
+let tP = keys['ArrowUp'] ? -0.6 : (keys['ArrowDown'] ? 0.6 : 0);
+let tR = keys['ArrowLeft'] ? 0.6 : (keys['ArrowRight'] ? -0.6 : 0);
+drone.angVel.x = (tP - drone.rot.x) * 8.0; drone.angVel.z = (tR - drone.rot.z) * 8.0;
+}
+drone.angVel.y = keys['a'] || keys['A'] ? RATES.yaw : (keys['d'] || keys['D'] ? -RATES.yaw : drone.angVel.y - drone.angVel.y * ANGULAR_DRAG * dt);
+}
+// Apply Rotations
+drone.rot.x += drone.angVel.x * dt; drone.rot.y += drone.angVel.y * dt; drone.rot.z += drone.angVel.z * dt;
+if (flightMode === 'angle') { drone.rot.x = Math.max(-0.7, Math.min(0.7, drone.rot.x)); drone.rot.z = Math.max(-0.7, Math.min(0.7, drone.rot.z)); }
+// 3. Resolve Linear Kinematic Translation Vectors
+let thrust = new THREE.Vector3(0, (drone.throttle / 100) * currentMaxThrust, 0).applyQuaternion(new THREE.Quaternion().setFromEuler(drone.rot));
+let acc = new THREE.Vector3(0, -GRAVITY, 0).add(thrust);
+let spd = drone.vel.length(); if (spd > 0) drone.vel.add(drone.vel.clone().normalize().multiplyScalar(-DRAG * spd * dt));
+drone.vel.addScaledVector(acc, dt); drone.pos.addScaledVector(drone.vel, dt);
+// Ground Bounds Enforcement Check
+if (drone.pos.y < 0.1) {
+if (drone.vel.length() > 8) triggerCrashSequence();
+drone.pos.y = 0.1; drone.vel.set(0, 0, 0); if(flightMode==='angle') { drone.rot.x = 0; drone.rot.z = 0; }
+}
+// 4. Manage Game Logic, Audio Synth & Particle Generations
+if (drone.throttle > 5 && !raceActive) raceActive = true;
+if (raceActive) { currentLapTime += dt; document.getElementById('lap-timer').innerText = LAP: ${currentLapTime.toFixed(2)}s; checkGateCollisions(); }
+checkObstacleCollisions();
+applyAnalogStaticInterference();
+if (audioInitialized && audioCtx) updateMotorSound();
+// Particle Trail Management
+if (drone.throttle > 15 && particles.length < maxParticles) {
+let spawnPoint = drone.pos.clone().add(new THREE.Vector3(0, -0.4, 0.8).applyQuaternion(new THREE.Quaternion().setFromEuler(drone.rot)));
+particles.push(new JetParticle(spawnPoint, drone.throttle > 80 ? 0xff3300 : 0x00ffff));
+}
+for (let i = particles.length - 1; i >= 0; i--) { if (!particles[i].update(dt)) particles.splice(i, 1); }
+}
+// --- System Utility Subroutines ---
+function checkGateCollisions() {
+let gatePositions = [new THREE.Vector3(0, 4, -40), new THREE.Vector3(40, 4, -80), new THREE.Vector3(0, 4, -120), new THREE.Vector3(-40, 4, -60)];
+gatePositions.forEach((center, index) => {
+if (drone.pos.distanceTo(center) < 6) {
+if (index === 0 && lastPassedGate === gatePositions.length - 1) {
+totalLapsCompleted++;
+if (currentLapTime < bestLapTime) { bestLapTime = currentLapTime; document.getElementById('best-lap').innerText = BEST: ${bestLapTime.toFixed(2)}s; }
+currentLapTime = 0; flashOSD('#00ff00');
+for (let i = 0; i < 30; i++) { let p = new JetParticle(drone.pos, 0x00ff00); p.vel.multiplyScalar(6); p.maxAge = 0.8; particles.push(p); }
+}
+lastPassedGate = index;
+}
+});
+}
+function checkObstacleCollisions() {
+obstacleMeshes.forEach(mesh => {
+let tempPos = new THREE.Vector3(); mesh.getWorldPosition(tempPos);
+if (Math.sqrt(Math.pow(drone.pos.x-tempPos.x,2)+Math.pow(drone.pos.z-tempPos.z,2)) < 12 && drone.pos.y < mesh.geometry.parameters.height) triggerCrashSequence();
+});
+}
+function triggerCrashSequence() { flashOSD('#ff0055'); reset(); currentLapTime = 0; raceActive = false; }
+function flashOSD(c) { const o = document.getElementById('osd'); o.style.boxShadow = inset 0 0 80px ${c}; setTimeout(() => o.style.boxShadow = 'none', 300); }
+function applyAnalogStaticInterference() {
+let d = drone.pos.length(), noise = Math.min(0.25, 0.04 + Math.max(0,(20-drone.pos.y)*0.002) + Math.max(0,(d-100)*0.0003) + (Math.random()>0.97?0.08:0));
+document.querySelector('.video-noise').style.opacity = noise;
+if (noise > 0.12 && Math.random() > 0.8) { document.getElementById('osd').style.color = '#77ff77'; document.getElementById('osd').style.transform = translate(${(Math.random()-0.5)*3}px, ${(Math.random()-0.5)*3}px); }
+else { document.getElementById('osd').style.color = '#00ff00'; document.getElementById('osd').style.transform = 'none'; }
+}
+function initAudio() {
+if (audioInitialized) return;
+try {
+const AudioContext = window.AudioContext || window.webkitAudioContext; audioCtx = new AudioContext();
+mainOsc = audioCtx.createOscillator(); mainOsc.type = 'sawtooth';
+gainNode = audioCtx.createGain(); gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+mainOsc.connect(gainNode); gainNode.connect(audioCtx.destination);
+mainOsc.start(); audioInitialized = true;
+} catch (e) { console.error(e); }
+}
+function updateMotorSound() {
+mainOsc.frequency.setTargetAtTime(60 + (drone.throttle / 100) * 390, audioCtx.currentTime, 0.03);
+gainNode.gain.setTargetAtTime(drone.throttle <= 1 ? 0.01 : (drone.throttle / 100) * 0.15, audioCtx.currentTime, 0.03);
+}
+function animate() { requestAnimationFrame(animate); updatePhysics(clock.getDelta()); camera.position.copy(drone.pos); let tRot = drone.rot.clone(); tRot.x += THREE.MathUtils.degToRad(drone.cameraTilt); camera.rotation.copy(tRot); document.getElementById('v-thr').innerText = Math.round(drone.throttle); document.getElementById('v-spd').innerText = Math.round(drone.vel.length() * 3.6); document.getElementById('v-alt').innerText = (drone.pos.y - 0.1).toFixed(1); document.getElementById('v-pit').innerText = Math.round(THREE.MathUtils.radToDeg(drone.rot.x)); document.getElementById('v-rol').innerText = Math.round(THREE.MathUtils.radToDeg(drone.rot.z)); document.getElementById('v-yaw').innerText = Math.round(THREE.MathUtils.radToDeg(drone.rot.y)); let cellColor = currentCellVoltage < 3.5 ? '#ff3300' : '#00ff00'; document.getElementById('bat-telemetry').innerText = BAT: ${(currentCellVoltage*totalCells).toFixed(1)}V [${Math.round((remainingCapacityMAh/batteryCapacityMAh)*100)}%]; document.getElementById('bat-telemetry').style.color = cellColor; renderer.render(scene, camera); }
+function reset() { drone.pos.set(0, 0.2, 0); drone.rot.set(0, 0, 0); drone.vel.set(0, 0, 0); drone.angVel.set(0, 0, 0); drone.throttle = 0; remainingCapacityMAh = batteryCapacityMAh; currentCellVoltage = nominalVoltage; currentMaxThrust = BASE_MAX_THRUST; if (audioInitialized && gainNode) gainNode.gain.setValueAtTime(0, audioCtx.currentTime); }
+function setupEvents() {
+window.addEventListener('keydown', (e) => { keys[e.key] = true; if(e.key.toLowerCase() === 'r') reset(); });
+window.addEventListener('keyup', (e) => { keys[e.key] = false; });
+window.addEventListener("gamepadconnected", (e) => { gamepadIndex = e.gamepad.index; flashOSD('#00ffff'); });
+window.addEventListener("gamepaddisconnected", (e) => { if (gamepadIndex === e.gamepad.index) gamepadIndex = null; });
+document.getElementById('b-str').addEventListener('click', () => { initAudio(); document.getElementById('modal').style.display = 'none'; });
+document.getElementById('b-rst').addEventListener('click', reset);
+document.getElementById('s-mod').addEventListener('change', (e) => { flightMode = e.target.value; document.getElementById('v-mod').innerText = flightMode.toUpperCase(); });
+document.getElementById('s-tlt').addEventListener('change', (e) => { drone.cameraTilt = parseInt(e.target.value); });
+window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+}
+window.onload = init;
+
+
